@@ -8,7 +8,13 @@ import {
   VideoTrack,
   type TrackReference,
 } from "@livekit/components-react";
-import { ConnectionState, Track, type Participant, type RoomOptions } from "livekit-client";
+import {
+  ConnectionState,
+  DisconnectReason,
+  Track,
+  type Participant,
+  type RoomOptions,
+} from "livekit-client";
 import {
   Check,
   ChevronLeft,
@@ -17,6 +23,8 @@ import {
   LayoutGrid,
   LoaderCircle,
   Maximize2,
+  Plus,
+  Power,
   QrCode,
   ScreenShare,
   Users,
@@ -24,7 +32,7 @@ import {
 import Link from "next/link";
 import { useEffect, useEffectEvent, useState } from "react";
 import Logo from "@/components/Logo";
-import { connectionErrorMessage, fetchToken, type TokenResponse } from "@/lib/api";
+import { connectionErrorMessage, endRoom, fetchToken, type TokenResponse } from "@/lib/api";
 import InvitePanel from "./InvitePanel";
 
 const PAGE_SIZE = 25;
@@ -36,6 +44,7 @@ const roomOptions: RoomOptions = { adaptiveStream: true, dynacast: true };
 export default function HostDashboard({ code, hostKey }: { code: string; hostKey: string }) {
   const [connection, setConnection] = useState<TokenResponse | null>(null);
   const [error, setError] = useState("");
+  const [ended, setEnded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +55,10 @@ export default function HostDashboard({ code, hostKey }: { code: string; hostKey
       cancelled = true;
     };
   }, [code, hostKey]);
+
+  if (ended) {
+    return <SessionEnded code={code} />;
+  }
 
   if (error) {
     return (
@@ -75,9 +88,10 @@ export default function HostDashboard({ code, hostKey }: { code: string; hostKey
       video={false}
       options={roomOptions}
       onError={(err) => setError(connectionErrorMessage(err))}
+      onDisconnected={(reason) => reason === DisconnectReason.ROOM_DELETED && setEnded(true)}
       className="flex h-dvh flex-col"
     >
-      <HostView code={code} />
+      <HostView code={code} hostKey={hostKey} onEnded={() => setEnded(true)} />
     </LiveKitRoom>
   );
 }
@@ -86,13 +100,22 @@ function displayName(p: Participant) {
   return p.name || p.identity;
 }
 
-function HostView({ code }: { code: string }) {
+function HostView({
+  code,
+  hostKey,
+  onEnded,
+}: {
+  code: string;
+  hostKey: string;
+  onEnded: () => void;
+}) {
   const state = useConnectionState();
   const participants = useParticipants().filter((p) => !p.isLocal);
   const screens = useTracks([Track.Source.ScreenShare]).filter((t) => !t.participant.isLocal);
   const [page, setPage] = useState(0);
   const [maximizedSid, setMaximizedSid] = useState<string | null>(null);
   const [showInvite, setShowInvite] = useState(true);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
 
   const pageCount = Math.max(1, Math.ceil(screens.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
@@ -111,6 +134,7 @@ function HostView({ code }: { code: string }) {
   }
 
   const onKey = useEffectEvent((e: KeyboardEvent) => {
+    if (confirmingEnd) return;
     if (e.key === "Escape") setMaximizedSid(null);
     if (e.key === "ArrowRight") step(1);
     if (e.key === "ArrowLeft") step(-1);
@@ -144,6 +168,12 @@ function HostView({ code }: { code: string }) {
             }`}
           >
             <QrCode className="size-4" /> Invite
+          </button>
+          <button
+            onClick={() => setConfirmingEnd(true)}
+            className="flex items-center gap-2 rounded-lg border border-danger/40 px-3 py-1.5 text-sm text-danger transition hover:bg-danger-soft"
+          >
+            <Power className="size-4" /> End session
           </button>
         </div>
       </header>
@@ -192,6 +222,16 @@ function HostView({ code }: { code: string }) {
 
         {showInvite && !maximized && <InvitePanel code={code} />}
       </div>
+
+      {confirmingEnd && (
+        <EndSessionDialog
+          code={code}
+          hostKey={hostKey}
+          joinedCount={participants.length}
+          onCancel={() => setConfirmingEnd(false)}
+          onEnded={onEnded}
+        />
+      )}
     </>
   );
 }
@@ -416,5 +456,108 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
     <span className="flex items-center gap-1.5 rounded-full bg-surface-3 px-2.5 py-1 text-xs text-muted">
       <span className="size-1.5 rounded-full bg-current" /> {label}
     </span>
+  );
+}
+
+function EndSessionDialog({
+  code,
+  hostKey,
+  joinedCount,
+  onCancel,
+  onEnded,
+}: {
+  code: string;
+  hostKey: string;
+  joinedCount: number;
+  onCancel: () => void;
+  onEnded: () => void;
+}) {
+  const [ending, setEnding] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  async function end() {
+    setEnding(true);
+    setError("");
+    try {
+      await endRoom({ room: code, hostKey });
+      onEnded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't end the session. Try again.");
+      setEnding(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
+      onClick={onCancel}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="end-title"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm rounded-2xl border border-border bg-surface p-6"
+      >
+        <div className="flex size-10 items-center justify-center rounded-xl bg-danger-soft text-danger">
+          <Power className="size-5" />
+        </div>
+        <h2 id="end-title" className="mt-4 text-lg font-medium">
+          End this session for everyone?
+        </h2>
+        <p className="mt-1 text-sm text-muted">
+          {joinedCount === 0
+            ? "The room will close and the code will stop working."
+            : `${joinedCount} ${joinedCount === 1 ? "person" : "people"} will be disconnected and their screen sharing will stop.`}
+        </p>
+        {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            autoFocus
+            className="rounded-lg border border-border px-4 py-2 text-sm transition hover:border-border-strong"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={end}
+            disabled={ending}
+            className="flex items-center gap-2 rounded-lg bg-danger px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-60"
+          >
+            {ending && <LoaderCircle className="size-4 animate-spin" />}
+            End for everyone
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionEnded({ code }: { code: string }) {
+  return (
+    <main className="flex flex-1 flex-col items-center justify-center px-4 text-center">
+      <div className="flex size-14 items-center justify-center rounded-2xl bg-surface-3 text-muted">
+        <Power className="size-6" />
+      </div>
+      <h1 className="mt-5 text-2xl font-semibold">Session ended</h1>
+      <p className="mt-2 text-sm text-muted">
+        Room <span className="font-mono tracking-widest">{code}</span> is closed and everyone has
+        been disconnected.
+      </p>
+      <Link
+        href="/"
+        className="mt-6 flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-medium text-white transition hover:bg-accent-hover"
+      >
+        <Plus className="size-4" /> Start a new session
+      </Link>
+    </main>
   );
 }

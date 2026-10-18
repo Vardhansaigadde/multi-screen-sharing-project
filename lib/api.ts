@@ -28,6 +28,10 @@ export function fetchToken(params: {
   return postJson<TokenResponse>("/api/token", params);
 }
 
+export function endRoom(params: { room: string; hostKey: string }) {
+  return postJson<{ ended: true }>("/api/rooms/end", params);
+}
+
 export function connectionErrorMessage(err: Error) {
   if (/signal connection|Failed to fetch|websocket/i.test(err.message)) {
     return "Can't reach the video server. Make sure LiveKit is running and LIVEKIT_URL in .env.local is correct.";

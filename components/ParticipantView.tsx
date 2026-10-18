@@ -1,12 +1,18 @@
 "use client";
 
 import { LiveKitRoom, useConnectionState, useLocalParticipant } from "@livekit/components-react";
-import { ConnectionState, ScreenSharePresets, type RoomOptions } from "livekit-client";
+import {
+  ConnectionState,
+  DisconnectReason,
+  ScreenSharePresets,
+  type RoomOptions,
+} from "livekit-client";
 import {
   ArrowRight,
   LoaderCircle,
   LogOut,
   MonitorOff,
+  Power,
   ScreenShare,
   ScreenShareOff,
   Shield,
@@ -59,6 +65,18 @@ export default function ParticipantView({
   const [connection, setConnection] = useState<TokenResponse | null>(null);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState("");
+  const [ended, setEnded] = useState(false);
+
+  function handleDisconnected(reason?: DisconnectReason) {
+    setConnection(null);
+    if (reason === DisconnectReason.ROOM_DELETED) {
+      setEnded(true);
+    } else if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+      setError("The host removed you from this session.");
+    } else if (reason !== DisconnectReason.CLIENT_INITIATED) {
+      setError("You were disconnected. Join again to keep sharing.");
+    }
+  }
 
   async function join(e?: React.FormEvent) {
     e?.preventDefault();
@@ -72,6 +90,28 @@ export default function ParticipantView({
     } finally {
       setJoining(false);
     }
+  }
+
+  if (ended) {
+    return (
+      <PageShell>
+        <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-6 text-center">
+          <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-surface-3 text-muted">
+            <Power className="size-6" />
+          </div>
+          <p className="mt-5 text-lg font-medium">The host ended this session</p>
+          <p className="mt-1 text-sm text-muted">
+            Your screen is no longer being shared. You can close this tab.
+          </p>
+          <Link
+            href="/"
+            className="mt-6 inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm transition hover:border-border-strong"
+          >
+            Back to home
+          </Link>
+        </div>
+      </PageShell>
+    );
   }
 
   if (!connection) {
@@ -124,7 +164,7 @@ export default function ParticipantView({
       audio={false}
       video={false}
       options={roomOptions}
-      onDisconnected={() => setConnection(null)}
+      onDisconnected={handleDisconnected}
       onError={(err) => setError(connectionErrorMessage(err))}
       className="flex flex-1 flex-col"
     >
