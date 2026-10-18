@@ -9,7 +9,11 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@livekit/components-react": "^2.9.24",
+    "livekit-client": "^2.23.0",
+    "livekit-server-sdk": "^2.19.1",
     "next": "16.4.2",
+    "qrcode.react": "^4.2.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

@@ -1,69 +1,89 @@
-import Image from "next/image";
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { createRoom, normalizeRoomCode } from "@/lib/api";
 
 export default function Home() {
+  const router = useRouter();
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+
+  async function handleCreate() {
+    setCreating(true);
+    setCreateError("");
+    try {
+      const room = await createRoom();
+      router.push(`/host/${room.code}?key=${room.hostKey}`);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "Could not create room");
+      setCreating(false);
+    }
+  }
+
+  function handleJoin(e: React.FormEvent) {
+    e.preventDefault();
+    const roomCode = normalizeRoomCode(code);
+    if (!roomCode || !name.trim()) return;
+    router.push(`/room/${roomCode}?name=${encodeURIComponent(name.trim())}`);
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <main className="flex flex-1 flex-col items-center justify-center px-4 py-12">
+      <div className="mb-10 text-center">
+        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">ScreenHub</h1>
+        <p className="mt-3 text-muted">
+          Every shared screen, live, in one place. Click any screen to see it full size.
+        </p>
+      </div>
+
+      <div className="grid w-full max-w-3xl gap-4 sm:grid-cols-2">
+        <section className="flex flex-col rounded-2xl border border-border bg-surface p-6">
+          <h2 className="text-lg font-medium">Host a session</h2>
+          <p className="mt-1 flex-1 text-sm text-muted">
+            Create a room and watch everyone&apos;s screen from your dashboard.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            onClick={handleCreate}
+            disabled={creating}
+            className="mt-6 rounded-lg bg-accent px-4 py-2.5 font-medium text-white transition hover:bg-accent-hover disabled:opacity-60"
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            {creating ? "Creating…" : "Create room"}
+          </button>
+          {createError && <p className="mt-3 text-sm text-danger">{createError}</p>}
+        </section>
+
+        <form
+          onSubmit={handleJoin}
+          className="flex flex-col rounded-2xl border border-border bg-surface p-6"
+        >
+          <h2 className="text-lg font-medium">Join a session</h2>
+          <p className="mt-1 text-sm text-muted">Enter the room code from your host.</p>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Your name"
+            maxLength={32}
+            className="mt-4 rounded-lg border border-border bg-surface-2 px-3 py-2.5 outline-none focus:border-accent"
+          />
+          <input
+            value={code}
+            onChange={(e) => setCode(normalizeRoomCode(e.target.value))}
+            placeholder="Room code"
+            maxLength={6}
+            className="mt-3 rounded-lg border border-border bg-surface-2 px-3 py-2.5 font-mono tracking-widest uppercase outline-none focus:border-accent"
+          />
+          <button
+            type="submit"
+            disabled={!name.trim() || code.length !== 6}
+            className="mt-4 rounded-lg border border-border bg-surface-2 px-4 py-2.5 font-medium transition hover:border-accent disabled:opacity-50"
           >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            Join room
+          </button>
+        </form>
+      </div>
+    </main>
   );
 }
