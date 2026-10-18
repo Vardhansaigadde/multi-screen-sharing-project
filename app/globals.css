@@ -1,29 +1,40 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0b0d12;
-  --surface: #141821;
-  --surface-2: #1c212d;
-  --border: #2a3040;
+  color-scheme: dark;
+  --background: #0a0c10;
+  --surface: #12151c;
+  --surface-2: #191d26;
+  --surface-3: #212633;
+  --border: #262b38;
+  --border-strong: #353c4d;
   --foreground: #e8ebf2;
   --muted: #8a93a6;
   --accent: #4f7cff;
   --accent-hover: #6a90ff;
+  --accent-soft: rgb(79 124 255 / 0.14);
   --danger: #ef4d5a;
+  --danger-soft: rgb(239 77 90 / 0.14);
   --success: #2fbf71;
+  --success-soft: rgb(47 191 113 / 0.14);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
   --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -31,4 +42,13 @@
 body {
   background: var(--background);
   color: var(--foreground);
+}
+
+/* Faint grid behind the home page, echoing the screen grid. */
+.bg-grid {
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 70%);
 }
