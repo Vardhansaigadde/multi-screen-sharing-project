@@ -1,42 +1,83 @@
-# ScreenHub
+# OmniScreen
 
-Many laptops share their screens into one room. The host sees every screen at once in a grid and can click any screen to see it full size.
+Live multi-screen sharing and monitoring. Many laptops share their screens into one room, the host sees every screen at once in a grid, and can click any screen to see it full size.
+
+**Live demo:** https://omniscreen.vercel.app
 
 Built with Next.js, TypeScript, Tailwind CSS and [LiveKit](https://livekit.io) (open-source WebRTC media server).
 
+## Features
+
+- **Rooms with a 6-letter code and QR invite.** Participants scan the QR code or type the code to join. No install or sign-up.
+- **Host-only monitoring.** The host watches every shared screen; participants can only share and never see anyone else's screen.
+- **Live grid** that adjusts to the number of screens, with pages of 25 for large rooms.
+- **Click to enlarge** any screen in full quality. Arrow keys move between screens, Esc returns to the grid.
+- **End session** closes the room for everyone and stops all screen sharing.
+- **Dark dashboard** designed to look clear on a projector.
+
 ## How it works
 
-- **Host** creates a room and gets a private host link. The host can watch every screen but publishes nothing.
-- **Participants** join with the room code (or by scanning the QR code) and share their screen. They cannot see anyone else's screen.
-- These permissions are enforced by the LiveKit server through the access token, not only by the UI.
-- Each screen is sent in two qualities: 360p for grid tiles and 1080p for the full-size view. Tiles on other pages are paused, so the host only downloads what is on screen.
+```
+ Participant laptops ──screen video──▶  LiveKit server  ──▶  Host dashboard
+                                             ▲
+ Browser ──"join room X"──▶ Next.js API ─────┘ (signed access token)
+```
+
+- The Next.js backend issues signed LiveKit access tokens. Permissions are enforced by the LiveKit server, not only by the UI:
+  - **Host:** can watch, cannot publish, hidden from the participant list
+  - **Participant:** can publish a screen share only, cannot watch
+- The host link carries a host key (an HMAC of the room code), so only the room's creator can watch or end it. No database is needed.
+- Each screen is sent in two qualities: 360p for grid tiles and 1080p for the full-size view. Tiles that aren't visible are paused, so the host only downloads what is on screen. This keeps rooms of 50+ people light enough for the free tier.
 
 ## Run it locally
 
-1. Install dependencies: `npm install`
-2. Copy `.env.example` to `.env.local` (already done once).
-3. Start a local LiveKit server in dev mode: `livekit-server --dev`
-4. Start the app: `npm run dev`
-5. Open http://localhost:3000, click **Create room**, then open the join link in another tab and share a screen.
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+2. Copy `.env.example` to `.env.local`.
+3. Download the [LiveKit server](https://github.com/livekit/livekit/releases) and start it in dev mode:
+   ```bash
+   livekit-server --dev
+   ```
+4. Start the app:
+   ```bash
+   npm run dev
+   ```
+5. Open http://localhost:3000, click **Create room**, then open the join link in another window and share a screen.
 
-## Use LiveKit Cloud instead
+Browsers only allow screen sharing on `localhost` or HTTPS, so testing with other devices needs the deployed site.
 
-Create a free project at https://cloud.livekit.io and put its URL, API key and API secret in `.env.local`.
+## Deploy
+
+1. Create a free project at [LiveKit Cloud](https://cloud.livekit.io).
+2. Import this repo into [Vercel](https://vercel.com).
+3. Add the environment variables `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` from your LiveKit project.
+4. Deploy. Every push to `main` redeploys automatically.
 
 ## Project structure
 
 ```
 app/
-  page.tsx               Home: create or join a room
-  host/[code]/page.tsx   Host dashboard
-  room/[code]/page.tsx   Participant page
-  api/rooms/route.ts     Creates a room code and host key
-  api/token/route.ts     Issues LiveKit access tokens with role permissions
+  page.tsx                Home: create or join a room
+  host/[code]/page.tsx    Host dashboard
+  room/[code]/page.tsx    Participant page
+  api/rooms/route.ts      Creates a room code and host key
+  api/rooms/end/route.ts  Ends a session for everyone (host only)
+  api/token/route.ts      Issues LiveKit access tokens with role permissions
 components/
-  HostDashboard.tsx      Grid, pagination, full-size view
-  ParticipantView.tsx    Join form and screen share button
-  InvitePanel.tsx        QR code and join link
+  HostDashboard.tsx       Grid, pagination, full-size view, end session
+  ParticipantView.tsx     Join form and screen share controls
+  InvitePanel.tsx         QR code and join link
+  Logo.tsx                Logo mark and wordmark
 lib/
-  livekit-server.ts      Server-only helpers (room codes, host keys)
-  api.ts                 Client helpers
+  brand.ts                App name (change it here)
+  livekit-server.ts       Server-only helpers (room codes, host keys)
+  api.ts                  Client helpers
 ```
+
+## Roadmap
+
+- Live stats panel (latency and quality per screen)
+- Load testing with simulated participants up to 200
+- Mobile app for screen sharing from phones
