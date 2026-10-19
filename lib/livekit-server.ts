@@ -1,4 +1,5 @@
 import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
+import { RoomServiceClient } from "livekit-server-sdk";
 
 // Server-only helpers. Never import this file from a client component:
 // it reads the LiveKit API secret.
@@ -59,4 +60,47 @@ export function publicLiveKitUrl(configuredUrl: string, requestHost: string | nu
     url.hostname = requestHost.split(":")[0];
   }
   return url.toString().replace(/\/$/, "");
+}
+
+type HostRequest = {
+  room: string;
+  body: Record<string, unknown>;
+  client: RoomServiceClient;
+};
+
+// Shared checks for host-only actions: valid JSON, a valid room code, and the
+// host key that proves the caller created the room. Returns either the parsed
+// request or an error Response to send back.
+export async function authorizeHost(request: Request): Promise<HostRequest | Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid request" }, { status: 400 });
+  }
+
+  const { room, hostKey } = body;
+  if (!isValidRoomCode(room)) {
+    return Response.json({ error: "Invalid room code" }, { status: 400 });
+  }
+
+  let config;
+  try {
+    config = getLiveKitConfig();
+  } catch (err) {
+    console.error(err);
+    return Response.json({ error: "Server is not configured" }, { status: 500 });
+  }
+
+  if (!isValidHostKey(room, hostKey)) {
+    return Response.json({ error: "Only the host can do this" }, { status: 403 });
+  }
+
+  // The room service API speaks HTTP, while LIVEKIT_URL is a WebSocket URL.
+  const apiUrl = config.url.replace(/^ws/, "http");
+  return { room, body, client: new RoomServiceClient(apiUrl, config.apiKey, config.apiSecret) };
+}
+
+export function isNotFound(err: unknown) {
+  return (err as { status?: number }).status === 404;
 }

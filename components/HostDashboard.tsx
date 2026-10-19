@@ -4,6 +4,8 @@ import {
   LiveKitRoom,
   useConnectionState,
   useParticipants,
+  useRoomContext,
+  useRoomInfo,
   useTracks,
   VideoTrack,
   type TrackReference,
@@ -11,28 +13,49 @@ import {
 import {
   ConnectionState,
   DisconnectReason,
+  RoomEvent,
   Track,
-  type Participant,
+  type RemoteParticipant,
+  type RemoteTrackPublication,
   type RoomOptions,
 } from "livekit-client";
 import {
+  Bell,
+  BellOff,
+  Cast,
   Check,
   ChevronLeft,
   ChevronRight,
   Copy,
   LayoutGrid,
   LoaderCircle,
-  Maximize2,
+  Pin,
+  PinOff,
   Plus,
   Power,
-  QrCode,
   ScreenShare,
+  Search,
+  UserPlus,
+  UserX,
   Users,
+  X,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState, useSyncExternalStore } from "react";
 import Logo from "@/components/Logo";
-import { connectionErrorMessage, endRoom, fetchToken, type TokenResponse } from "@/lib/api";
+import {
+  connectionErrorMessage,
+  endRoom,
+  fetchToken,
+  removeParticipant,
+  setSpotlight,
+  type TokenResponse,
+} from "@/lib/api";
+import { AttendanceTracker } from "@/lib/attendance";
+import { parseRoomState } from "@/lib/room-state";
+import PeoplePanel from "./host/PeoplePanel";
+import ScreenTile from "./host/ScreenTile";
+import { Avatar, ConfirmDialog, displayName, SignalBars, Toasts, type Toast } from "./host/ui";
 import InvitePanel from "./InvitePanel";
 
 const PAGE_SIZE = 25;
@@ -55,6 +78,13 @@ export default function HostDashboard({ code, hostKey }: { code: string; hostKey
       cancelled = true;
     };
   }, [code, hostKey]);
+
+  function handleDisconnected(reason?: DisconnectReason) {
+    if (reason === DisconnectReason.ROOM_DELETED) setEnded(true);
+    if (reason === DisconnectReason.DUPLICATE_IDENTITY) {
+      setError("This room was opened as host in another tab or device.");
+    }
+  }
 
   if (ended) {
     return <SessionEnded code={code} />;
@@ -88,7 +118,7 @@ export default function HostDashboard({ code, hostKey }: { code: string; hostKey
       video={false}
       options={roomOptions}
       onError={(err) => setError(connectionErrorMessage(err))}
-      onDisconnected={(reason) => reason === DisconnectReason.ROOM_DELETED && setEnded(true)}
+      onDisconnected={handleDisconnected}
       className="flex h-dvh flex-col"
     >
       <HostView code={code} hostKey={hostKey} onEnded={() => setEnded(true)} />
@@ -96,9 +126,8 @@ export default function HostDashboard({ code, hostKey }: { code: string; hostKey
   );
 }
 
-function displayName(p: Participant) {
-  return p.name || p.identity;
-}
+type Panel = "people" | "invite" | null;
+type Confirm = { kind: "end" } | { kind: "remove"; identity: string; name: string } | null;
 
 function HostView({
   code,
@@ -109,13 +138,45 @@ function HostView({
   hostKey: string;
   onEnded: () => void;
 }) {
+  const room = useRoomContext();
   const state = useConnectionState();
   const participants = useParticipants().filter((p) => !p.isLocal);
-  const screens = useTracks([Track.Source.ScreenShare]).filter((t) => !t.participant.isLocal);
+  const allScreens = useTracks([Track.Source.ScreenShare]).filter((t) => !t.participant.isLocal);
+  const { metadata } = useRoomInfo();
+  const { spotlight } = parseRoomState(metadata);
+
+  const [tracker] = useState(() => new AttendanceTracker());
+  useEffect(() => tracker.attach(room), [room, tracker]);
+  const records = useSyncExternalStore(tracker.subscribe, tracker.getSnapshot, tracker.getSnapshot);
+
+  const [search, setSearch] = useState("");
+  const [pinned, setPinned] = useState<string[]>([]);
   const [page, setPage] = useState(0);
   const [maximizedSid, setMaximizedSid] = useState<string | null>(null);
-  const [showInvite, setShowInvite] = useState(true);
-  const [confirmingEnd, setConfirmingEnd] = useState(false);
+  const [panel, setPanel] = useState<Panel>("invite");
+  const [alertsOn, setAlertsOn] = useState(false);
+  const [confirm, setConfirm] = useState<Confirm>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
+
+  function notify(text: string, tone: Toast["tone"] = "info") {
+    const id = ++toastId.current;
+    setToasts((list) => [...list.slice(-3), { id, text, tone }]);
+    setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), 6000);
+  }
+
+  useStopSharingAlerts(alertsOn, notify);
+
+  // Pinned screens first, then everyone else in join order; search filters both.
+  const query = search.trim().toLowerCase();
+  const matches = (name: string) => !query || name.toLowerCase().includes(query);
+  const screens = allScreens
+    .filter((t) => matches(displayName(t.participant)))
+    .sort(
+      (a, b) =>
+        Number(pinned.includes(b.participant.identity)) -
+        Number(pinned.includes(a.participant.identity)),
+    );
 
   const pageCount = Math.max(1, Math.ceil(screens.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
@@ -124,8 +185,50 @@ function HostView({
   const maximizedIndex = screens.findIndex((t) => t.publication.trackSid === maximizedSid);
   const maximized = maximizedIndex >= 0 ? screens[maximizedIndex] : null;
 
-  const sharingIds = new Set(screens.map((t) => t.participant.identity));
-  const waiting = participants.filter((p) => !sharingIds.has(p.identity));
+  const sharingIds = new Set(allScreens.map((t) => t.participant.identity));
+  const waiting = participants.filter(
+    (p) => !sharingIds.has(p.identity) && matches(displayName(p)),
+  );
+  const spotlightName = spotlight
+    ? (participants.find((p) => p.identity === spotlight)?.name ?? "Someone")
+    : null;
+
+  function togglePin(identity: string) {
+    setPinned((list) =>
+      list.includes(identity) ? list.filter((id) => id !== identity) : [...list, identity],
+    );
+  }
+
+  async function changeSpotlight(identity: string | null) {
+    try {
+      await setSpotlight({ room: code, hostKey, identity });
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "Couldn't update. Try again.", "error");
+    }
+  }
+
+  function actionsFor(screen: TrackReference) {
+    const { identity } = screen.participant;
+    return {
+      onEnlarge: () => setMaximizedSid(screen.publication.trackSid),
+      onTogglePin: () => togglePin(identity),
+      onToggleSpotlight: () => changeSpotlight(spotlight === identity ? null : identity),
+      onRemove: () =>
+        setConfirm({ kind: "remove", identity, name: displayName(screen.participant) }),
+    };
+  }
+
+  async function confirmRemove(identity: string, name: string) {
+    if (spotlight === identity) await setSpotlight({ room: code, hostKey, identity: null });
+    await removeParticipant({ room: code, hostKey, identity });
+    setConfirm(null);
+    notify(`${name} was removed`);
+  }
+
+  async function confirmEnd() {
+    await endRoom({ room: code, hostKey });
+    onEnded();
+  }
 
   function step(delta: number) {
     if (maximizedIndex < 0 || screens.length === 0) return;
@@ -134,7 +237,7 @@ function HostView({
   }
 
   const onKey = useEffectEvent((e: KeyboardEvent) => {
-    if (confirmingEnd) return;
+    if (confirm) return;
     if (e.key === "Escape") setMaximizedSid(null);
     if (e.key === "ArrowRight") step(1);
     if (e.key === "ArrowLeft") step(-1);
@@ -147,6 +250,8 @@ function HostView({
     return () => window.removeEventListener("keydown", onKey);
   }, [isMaximized]);
 
+  const hereCount = records.filter((r) => !r.leftAt).length;
+
   return (
     <>
       <header className="flex flex-wrap items-center gap-x-5 gap-y-3 border-b border-border bg-surface px-4 py-3 sm:px-5">
@@ -155,22 +260,25 @@ function HostView({
         <RoomCodeChip code={code} />
         <div className="flex items-center gap-2">
           <Stat icon={<Users className="size-3.5" />} value={participants.length} label="joined" />
-          <Stat icon={<ScreenShare className="size-3.5" />} value={screens.length} label="sharing" />
+          <Stat icon={<ScreenShare className="size-3.5" />} value={allScreens.length} label="sharing" />
         </div>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2">
           <ConnectionBadge state={state} />
-          <button
-            onClick={() => setShowInvite((v) => !v)}
-            className={`hidden items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition md:flex ${
-              showInvite
-                ? "border-accent bg-accent-soft text-accent"
-                : "border-border hover:border-border-strong"
-            }`}
+          <PanelButton
+            active={panel === "people"}
+            onClick={() => setPanel((p) => (p === "people" ? null : "people"))}
           >
-            <QrCode className="size-4" /> Invite
-          </button>
+            <Users className="size-4" /> People
+            <span className="rounded bg-surface-3 px-1.5 text-xs tabular-nums">{hereCount}</span>
+          </PanelButton>
+          <PanelButton
+            active={panel === "invite"}
+            onClick={() => setPanel((p) => (p === "invite" ? null : "invite"))}
+          >
+            <UserPlus className="size-4" /> Invite
+          </PanelButton>
           <button
-            onClick={() => setConfirmingEnd(true)}
+            onClick={() => setConfirm({ kind: "end" })}
             className="flex items-center gap-2 rounded-lg border border-danger/40 px-3 py-1.5 text-sm text-danger transition hover:bg-danger-soft"
           >
             <Power className="size-4" /> End session
@@ -178,12 +286,75 @@ function HostView({
         </div>
       </header>
 
+      {spotlight && (
+        <div className="flex items-center gap-3 border-b border-accent/40 bg-accent-soft px-4 py-2 text-sm sm:px-5">
+          <Cast className="size-4 text-accent" />
+          <span>
+            Showing <strong className="font-medium">{spotlightName}</strong>&apos;s screen to
+            everyone
+            {!sharingIds.has(spotlight) && (
+              <span className="text-muted"> · not sharing right now</span>
+            )}
+          </span>
+          <button
+            onClick={() => changeSpotlight(null)}
+            className="ml-auto rounded-lg bg-accent px-3 py-1 text-xs font-medium text-white transition hover:bg-accent-hover"
+          >
+            Stop showing
+          </button>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
         <main className={`min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 ${maximized ? "hidden" : ""}`}>
-          {screens.length === 0 ? (
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <label className="relative w-full max-w-xs">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name"
+                aria-label="Search by name"
+                className="w-full rounded-lg border border-border bg-surface py-2 pr-8 pl-9 text-sm outline-none transition placeholder:text-muted focus:border-accent"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  aria-label="Clear search"
+                  className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-muted hover:text-foreground"
+                >
+                  <X className="size-4" />
+                </button>
+              )}
+            </label>
+            <button
+              onClick={() => setAlertsOn((on) => !on)}
+              aria-pressed={alertsOn}
+              title={alertsOn ? "Alerts on: you'll see when someone stops sharing" : "Alerts off"}
+              className={`ml-auto flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                alertsOn
+                  ? "border-success bg-success text-white hover:opacity-90"
+                  : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground"
+              }`}
+            >
+              {alertsOn ? <Bell className="size-4" /> : <BellOff className="size-4" />}
+              Alerts
+            </button>
+          </div>
+
+          {allScreens.length === 0 ? (
             <EmptyState joinedCount={participants.length} />
+          ) : screens.length === 0 ? (
+            <p className="py-16 text-center text-sm text-muted">
+              No one sharing matches &ldquo;{search}&rdquo;.
+            </p>
           ) : (
-            <ScreenGrid screens={pageScreens} onSelect={setMaximizedSid} />
+            <ScreenGrid
+              screens={pageScreens}
+              pinned={pinned}
+              spotlight={spotlight}
+              actionsFor={actionsFor}
+            />
           )}
 
           {pageCount > 1 && (
@@ -215,24 +386,103 @@ function HostView({
             screen={maximized}
             position={maximizedIndex + 1}
             total={screens.length}
+            pinned={pinned.includes(maximized.participant.identity)}
+            spotlighted={spotlight === maximized.participant.identity}
+            actions={actionsFor(maximized)}
             onClose={() => setMaximizedSid(null)}
             onStep={step}
           />
         )}
 
-        {showInvite && !maximized && <InvitePanel code={code} />}
+        {!maximized && panel === "invite" && <InvitePanel code={code} />}
+        {!maximized && panel === "people" && (
+          <PeoplePanel
+            code={code}
+            records={records}
+            search={search}
+            onRemove={(r) => setConfirm({ kind: "remove", identity: r.identity, name: r.name })}
+          />
+        )}
       </div>
 
-      {confirmingEnd && (
-        <EndSessionDialog
-          code={code}
-          hostKey={hostKey}
-          joinedCount={participants.length}
-          onCancel={() => setConfirmingEnd(false)}
-          onEnded={onEnded}
+      {confirm?.kind === "end" && (
+        <ConfirmDialog
+          icon={<Power className="size-5" />}
+          title="End this session for everyone?"
+          body={
+            participants.length === 0
+              ? "The room will close and the code will stop working."
+              : `${participants.length} ${participants.length === 1 ? "person" : "people"} will be disconnected and their screen sharing will stop. Export attendance first if you need it.`
+          }
+          confirmLabel="End for everyone"
+          onConfirm={confirmEnd}
+          onCancel={() => setConfirm(null)}
         />
       )}
+      {confirm?.kind === "remove" && (
+        <ConfirmDialog
+          icon={<UserX className="size-5" />}
+          title={`Remove ${confirm.name}?`}
+          body="They'll be disconnected and their screen sharing will stop. They can join again with the room code."
+          confirmLabel="Remove"
+          onConfirm={() => confirmRemove(confirm.identity, confirm.name)}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+
+      <Toasts toasts={toasts} onDismiss={(id) => setToasts((l) => l.filter((t) => t.id !== id))} />
     </>
+  );
+}
+
+// Pops up "Ravi stopped sharing" (or "left") while alerts are switched on.
+function useStopSharingAlerts(enabled: boolean, notify: (text: string) => void) {
+  const room = useRoomContext();
+  const onNotify = useEffectEvent(notify);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    function onUnpublish(pub: RemoteTrackPublication, p: RemoteParticipant) {
+      if (pub.source !== Track.Source.ScreenShare) return;
+      const name = displayName(p);
+      // Leaving also unpublishes, so wait a moment to tell the two apart.
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        onNotify(
+          room.remoteParticipants.has(p.identity)
+            ? `${name} stopped sharing`
+            : `${name} left while sharing`,
+        );
+      }, 500);
+      timers.add(timer);
+    }
+    room.on(RoomEvent.TrackUnpublished, onUnpublish);
+    return () => {
+      room.off(RoomEvent.TrackUnpublished, onUnpublish);
+      timers.forEach(clearTimeout);
+    };
+  }, [enabled, room]);
+}
+
+function PanelButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`hidden items-center gap-2 rounded-lg border px-3 py-1.5 text-sm transition md:flex ${
+        active ? "border-accent bg-accent-soft text-accent" : "border-border hover:border-border-strong"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -269,20 +519,6 @@ function Stat({ icon, value, label }: { icon: React.ReactNode; value: number; la
   );
 }
 
-function Avatar({ name }: { name: string }) {
-  const initials = name
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-  return (
-    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-medium text-accent">
-      {initials}
-    </span>
-  );
-}
-
 function gridColumns(count: number) {
   if (count <= 1) return 1;
   if (count <= 4) return 2;
@@ -293,10 +529,14 @@ function gridColumns(count: number) {
 
 function ScreenGrid({
   screens,
-  onSelect,
+  pinned,
+  spotlight,
+  actionsFor,
 }: {
   screens: TrackReference[];
-  onSelect: (sid: string) => void;
+  pinned: string[];
+  spotlight: string | null;
+  actionsFor: (screen: TrackReference) => React.ComponentProps<typeof ScreenTile>["actions"];
 }) {
   const single = screens.length === 1;
   return (
@@ -305,22 +545,13 @@ function ScreenGrid({
       style={{ gridTemplateColumns: `repeat(${gridColumns(screens.length)}, minmax(0, 1fr))` }}
     >
       {screens.map((screen) => (
-        <button
+        <ScreenTile
           key={screen.publication.trackSid}
-          onClick={() => onSelect(screen.publication.trackSid)}
-          className="group relative aspect-video overflow-hidden rounded-xl border border-border bg-black text-left ring-accent transition outline-none hover:border-accent focus-visible:ring-2"
-        >
-          <VideoTrack trackRef={screen} className="size-full object-contain" />
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/80 to-transparent px-3 pt-6 pb-2">
-            <span className="size-1.5 shrink-0 rounded-full bg-danger" />
-            <span className="truncate text-xs font-medium text-white">
-              {displayName(screen.participant)}
-            </span>
-          </div>
-          <span className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-md bg-black/60 text-white opacity-0 transition group-hover:opacity-100">
-            <Maximize2 className="size-3.5" />
-          </span>
-        </button>
+          screen={screen}
+          pinned={pinned.includes(screen.participant.identity)}
+          spotlighted={spotlight === screen.participant.identity}
+          actions={actionsFor(screen)}
+        />
       ))}
     </div>
   );
@@ -330,29 +561,60 @@ function MaximizedView({
   screen,
   position,
   total,
+  pinned,
+  spotlighted,
+  actions,
   onClose,
   onStep,
 }: {
   screen: TrackReference;
   position: number;
   total: number;
+  pinned: boolean;
+  spotlighted: boolean;
+  actions: React.ComponentProps<typeof ScreenTile>["actions"];
   onClose: () => void;
   onStep: (delta: number) => void;
 }) {
   const name = displayName(screen.participant);
+  const iconButton =
+    "flex size-8 items-center justify-center rounded-lg border border-border transition hover:border-border-strong disabled:opacity-40";
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-black">
-      <div className="flex items-center gap-3 border-b border-border bg-surface px-4 py-2">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-2">
         <Avatar name={name} />
         <span className="truncate font-medium">{name}</span>
+        <SignalBars participant={screen.participant} />
         <span className="rounded-md bg-surface-2 px-2 py-0.5 text-xs text-muted tabular-nums">
           {position} / {total}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <button onClick={actions.onTogglePin} className={iconButton} title={pinned ? "Unpin" : "Pin to top"}>
+            {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+          </button>
+          <button
+            onClick={actions.onToggleSpotlight}
+            className={`flex h-8 items-center gap-2 rounded-lg border px-3 text-sm transition ${
+              spotlighted
+                ? "border-accent bg-accent-soft text-accent"
+                : "border-border hover:border-border-strong"
+            }`}
+          >
+            <Cast className="size-4" />
+            {spotlighted ? "Stop showing" : "Show to everyone"}
+          </button>
+          <button
+            onClick={actions.onRemove}
+            className={`${iconButton} hover:border-danger/50 hover:text-danger`}
+            title={`Remove ${name}`}
+          >
+            <UserX className="size-4" />
+          </button>
+          <span className="mx-1 h-6 w-px bg-border" />
           <button
             onClick={() => onStep(-1)}
             disabled={total < 2}
-            className="flex size-8 items-center justify-center rounded-lg border border-border transition hover:border-border-strong disabled:opacity-40"
+            className={iconButton}
             aria-label="Previous screen"
           >
             <ChevronLeft className="size-4" />
@@ -360,7 +622,7 @@ function MaximizedView({
           <button
             onClick={() => onStep(1)}
             disabled={total < 2}
-            className="flex size-8 items-center justify-center rounded-lg border border-border transition hover:border-border-strong disabled:opacity-40"
+            className={iconButton}
             aria-label="Next screen"
           >
             <ChevronRight className="size-4" />
@@ -431,7 +693,7 @@ function EmptyState({ joinedCount }: { joinedCount: number }) {
       <p className="mt-6 text-lg font-medium">Waiting for screens</p>
       <p className="mt-2 max-w-sm text-sm text-muted">
         {joinedCount === 0
-          ? "Share the room code or QR code. Screens appear here as soon as people start sharing."
+          ? "Share the room code. Screens appear here as soon as people start sharing."
           : `${joinedCount} joined. Their screens appear here when they click “Share my screen”.`}
       </p>
     </div>
@@ -456,88 +718,6 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
     <span className="flex items-center gap-1.5 rounded-full bg-surface-3 px-2.5 py-1 text-xs text-muted">
       <span className="size-1.5 rounded-full bg-current" /> {label}
     </span>
-  );
-}
-
-function EndSessionDialog({
-  code,
-  hostKey,
-  joinedCount,
-  onCancel,
-  onEnded,
-}: {
-  code: string;
-  hostKey: string;
-  joinedCount: number;
-  onCancel: () => void;
-  onEnded: () => void;
-}) {
-  const [ending, setEnding] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onCancel();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
-
-  async function end() {
-    setEnding(true);
-    setError("");
-    try {
-      await endRoom({ room: code, hostKey });
-      onEnded();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't end the session. Try again.");
-      setEnding(false);
-    }
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
-      onClick={onCancel}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="end-title"
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl border border-border bg-surface p-6"
-      >
-        <div className="flex size-10 items-center justify-center rounded-xl bg-danger-soft text-danger">
-          <Power className="size-5" />
-        </div>
-        <h2 id="end-title" className="mt-4 text-lg font-medium">
-          End this session for everyone?
-        </h2>
-        <p className="mt-1 text-sm text-muted">
-          {joinedCount === 0
-            ? "The room will close and the code will stop working."
-            : `${joinedCount} ${joinedCount === 1 ? "person" : "people"} will be disconnected and their screen sharing will stop.`}
-        </p>
-        {error && <p className="mt-3 text-sm text-danger">{error}</p>}
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            autoFocus
-            className="rounded-lg border border-border px-4 py-2 text-sm transition hover:border-border-strong"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={end}
-            disabled={ending}
-            className="flex items-center gap-2 rounded-lg bg-danger px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-60"
-          >
-            {ending && <LoaderCircle className="size-4 animate-spin" />}
-            End for everyone
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 

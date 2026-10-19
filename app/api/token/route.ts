@@ -6,6 +6,7 @@ import {
   isValidRoomCode,
   publicLiveKitUrl,
 } from "@/lib/livekit-server";
+import { HOST_IDENTITY } from "@/lib/room-state";
 
 type TokenRequest = {
   room?: unknown;
@@ -49,7 +50,9 @@ export async function POST(request: Request) {
 
   // Permissions are enforced by the LiveKit server itself:
   // - the host can watch every screen but publishes nothing and stays hidden
-  // - participants can only share their screen and cannot watch anyone
+  // - participants can only share their screen. They may subscribe, but each
+  //   participant's app only allows the host to watch its screen, except the
+  //   one the host chose to show to everyone (see ParticipantView).
   const grant: VideoGrant =
     role === "host"
       ? {
@@ -64,13 +67,14 @@ export async function POST(request: Request) {
       : {
           room,
           roomJoin: true,
-          canSubscribe: false,
+          canSubscribe: true,
           canPublish: true,
           canPublishSources: [TrackSource.SCREEN_SHARE],
           canPublishData: false,
         };
 
-  const identity = `${role}-${randomBytes(4).toString("hex")}`;
+  const identity =
+    role === "host" ? HOST_IDENTITY : `participant-${randomBytes(4).toString("hex")}`;
   const token = new AccessToken(config.apiKey, config.apiSecret, {
     identity,
     name: role === "host" ? "Host" : name,

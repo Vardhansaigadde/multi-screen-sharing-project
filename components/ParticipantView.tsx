@@ -1,14 +1,26 @@
 "use client";
 
-import { LiveKitRoom, useConnectionState, useLocalParticipant } from "@livekit/components-react";
+import {
+  LiveKitRoom,
+  useConnectionState,
+  useLocalParticipant,
+  useRoomInfo,
+  useTracks,
+  VideoTrack,
+} from "@livekit/components-react";
 import {
   ConnectionState,
   DisconnectReason,
   ScreenSharePresets,
+  Track,
+  type LocalParticipant,
+  type RemoteTrackPublication,
+  type RoomConnectOptions,
   type RoomOptions,
 } from "livekit-client";
 import {
   ArrowRight,
+  Cast,
   LoaderCircle,
   LogOut,
   MonitorOff,
@@ -18,11 +30,26 @@ import {
   Shield,
 } from "lucide-react";
 import Link from "next/link";
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Logo from "@/components/Logo";
 import { connectionErrorMessage, fetchToken, type TokenResponse } from "@/lib/api";
+import { HOST_IDENTITY, parseRoomState } from "@/lib/room-state";
 
-const roomOptions: RoomOptions = { dynacast: true };
+const roomOptions: RoomOptions = { adaptiveStream: true, dynacast: true };
+
+// Participants only ever receive the one screen the host chose to show, so
+// nothing is subscribed automatically (see useSpotlightSubscription).
+const connectOptions: RoomConnectOptions = { autoSubscribe: false };
+
+// Only the host may watch this participant's screen, unless the host is
+// showing it to everyone. LiveKit enforces this on the server, so other
+// participants can't subscribe to it even with a modified app.
+function applyScreenPermissions(participant: LocalParticipant, showToEveryone: boolean) {
+  participant.setTrackSubscriptionPermissions(
+    showToEveryone,
+    showToEveryone ? [] : [{ participantIdentity: HOST_IDENTITY, allowAll: true }],
+  );
+}
 
 // Grid tiles on the host dashboard use the small 360p layer; the full-size
 // view uses the 1080p one. Dynacast stops sending a layer nobody is watching.
@@ -164,18 +191,91 @@ export default function ParticipantView({
       audio={false}
       video={false}
       options={roomOptions}
+      connectOptions={connectOptions}
       onDisconnected={handleDisconnected}
       onError={(err) => setError(connectionErrorMessage(err))}
       className="flex flex-1 flex-col"
     >
       <PageShell>
-        <ShareControls code={code} name={name.trim()} />
+        <ParticipantSession code={code} name={name.trim()} />
       </PageShell>
     </LiveKitRoom>
   );
 }
 
-function ShareControls({ code, name }: { code: string; name: string }) {
+function ParticipantSession({ code, name }: { code: string; name: string }) {
+  const { localParticipant } = useLocalParticipant();
+  const state = useConnectionState();
+  const { metadata } = useRoomInfo();
+  const { spotlight } = parseRoomState(metadata);
+  const connected = state === ConnectionState.Connected;
+  const isMeSpotlighted = spotlight !== null && spotlight === localParticipant.identity;
+
+  useEffect(() => {
+    if (connected) applyScreenPermissions(localParticipant, isMeSpotlighted);
+  }, [connected, isMeSpotlighted, localParticipant]);
+
+  const spotlightScreen = useSpotlightSubscription(isMeSpotlighted ? null : spotlight);
+
+  if (spotlight && !isMeSpotlighted) {
+    return (
+      <div className="flex w-full max-w-5xl flex-col gap-4">
+        <section className="overflow-hidden rounded-2xl border border-accent/50 bg-black">
+          <div className="flex items-center gap-2 bg-surface px-4 py-2.5 text-sm">
+            <Cast className="size-4 text-accent" />
+            Your host is showing
+            <strong className="font-medium">
+              {spotlightScreen?.participant.name ?? "a screen"}
+            </strong>
+            to everyone
+          </div>
+          <div className="aspect-video">
+            {spotlightScreen?.publication.track ? (
+              <VideoTrack trackRef={spotlightScreen} className="size-full object-contain" />
+            ) : (
+              <div className="flex size-full items-center justify-center gap-2 text-sm text-muted">
+                <LoaderCircle className="size-4 animate-spin" /> Loading the shared screen…
+              </div>
+            )}
+          </div>
+        </section>
+        <div className="mx-auto w-full max-w-sm">
+          <ShareControls code={code} name={name} spotlighted={false} />
+        </div>
+      </div>
+    );
+  }
+
+  return <ShareControls code={code} name={name} spotlighted={isMeSpotlighted} />;
+}
+
+// Subscribes to the spotlighted participant's screen and unsubscribes from
+// everything else. Returns that screen once it's available.
+function useSpotlightSubscription(identity: string | null) {
+  const screens = useTracks([Track.Source.ScreenShare], { onlySubscribed: false }).filter(
+    (t) => !t.participant.isLocal,
+  );
+
+  useEffect(() => {
+    for (const screen of screens) {
+      const publication = screen.publication as RemoteTrackPublication;
+      const wanted = screen.participant.identity === identity;
+      if (publication.isDesired !== wanted) publication.setSubscribed(wanted);
+    }
+  }, [screens, identity]);
+
+  return identity ? screens.find((t) => t.participant.identity === identity) : undefined;
+}
+
+function ShareControls({
+  code,
+  name,
+  spotlighted,
+}: {
+  code: string;
+  name: string;
+  spotlighted: boolean;
+}) {
   const state = useConnectionState();
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
   const supported = useCanShareScreen();
@@ -186,6 +286,7 @@ function ShareControls({ code, name }: { code: string; name: string }) {
     setBusy(true);
     setError("");
     try {
+      if (!isScreenShareEnabled) applyScreenPermissions(localParticipant, spotlighted);
       await localParticipant.setScreenShareEnabled(
         !isScreenShareEnabled,
         { audio: false, contentHint: "detail", selfBrowserSurface: "exclude" },
@@ -234,16 +335,20 @@ function ShareControls({ code, name }: { code: string; name: string }) {
         <p className="mt-3 text-lg font-medium">
           {!supported
             ? "Screen sharing isn't available here"
-            : sharing
-              ? "Your screen is live"
-              : "Ready to share"}
+            : sharing && spotlighted
+              ? "Your screen is shown to everyone"
+              : sharing
+                ? "Your screen is live"
+                : "Ready to share"}
         </p>
         <p className="mt-1 text-sm text-muted">
           {!supported
             ? "Join from a laptop using Chrome, Edge or Firefox."
-            : sharing
-              ? "The host can see your screen now."
-              : "Choose a screen or window to show the host."}
+            : sharing && spotlighted
+              ? "Your host is presenting your screen to the whole room."
+              : sharing
+                ? "The host can see your screen now."
+                : "Choose a screen or window to show the host."}
         </p>
       </div>
 
@@ -270,7 +375,15 @@ function ShareControls({ code, name }: { code: string; name: string }) {
 
       <div className="mt-6 flex items-center justify-between border-t border-border pt-4 text-xs text-muted">
         <span className="flex items-center gap-1.5">
-          <Shield className="size-3.5" /> Only the host can see your screen
+          {spotlighted ? (
+            <>
+              <Cast className="size-3.5" /> Shown to everyone by the host
+            </>
+          ) : (
+            <>
+              <Shield className="size-3.5" /> Only the host can see your screen
+            </>
+          )}
         </span>
         <Link href="/" className="flex items-center gap-1 transition hover:text-foreground">
           <LogOut className="size-3.5" /> Leave

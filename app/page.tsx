@@ -8,7 +8,7 @@ import { createRoom, normalizeRoomCode } from "@/lib/api";
 import { APP_NAME } from "@/lib/brand";
 
 const steps = [
-  { title: "Create a room", text: "You get a room code and QR code." },
+  { title: "Create a room", text: "You get a room code to share." },
   { title: "Everyone shares", text: "People join from their laptops and share." },
   { title: "Watch every screen", text: "See them all live. Click one to enlarge it." },
 ];

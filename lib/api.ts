@@ -32,6 +32,14 @@ export function endRoom(params: { room: string; hostKey: string }) {
   return postJson<{ ended: true }>("/api/rooms/end", params);
 }
 
+export function removeParticipant(params: { room: string; hostKey: string; identity: string }) {
+  return postJson<{ removed: true }>("/api/rooms/remove", params);
+}
+
+export function setSpotlight(params: { room: string; hostKey: string; identity: string | null }) {
+  return postJson<{ spotlight: string | null }>("/api/rooms/spotlight", params);
+}
+
 export function connectionErrorMessage(err: Error) {
   if (/signal connection|Failed to fetch|websocket/i.test(err.message)) {
     return "Can't reach the video server. Make sure LiveKit is running and LIVEKIT_URL in .env.local is correct.";
